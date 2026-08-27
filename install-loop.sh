@@ -34,7 +34,7 @@ cat > "$PLIST" <<EOF
     <key>PI_TODO_ACTIVE_WINDOW_S</key><string>120</string>
   </dict>
   <key>RunAtLoad</key><true/>
-  <key>RunEvery</key><integer>3600</integer>
+  <key>StartInterval</key><integer>3600</integer>
   <key>StandardOutPath</key><string>$HOME/.pi/agent/todos/loop-stdout.log</string>
   <key>StandardErrorPath</key><string>$HOME/.pi/agent/todos/loop-stderr.log</string>
 </dict>

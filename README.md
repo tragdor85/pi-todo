@@ -66,4 +66,4 @@ rm -rf ~/.pi/agent/todos   # only if you don't want the data
 ```
 
 The pi-imessage `@task` handler keeps working after removal (it just gets a
-store error instead of a confirmation).
+store error instead of a confirmation).<!-- sync-test-marker -->

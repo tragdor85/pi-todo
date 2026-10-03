@@ -237,7 +237,7 @@ function syncSkill() {
     execFileSync("git", ["-C", SKILL_DIR, ...args], { timeout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   let origin = null;
   try { origin = git(["remote", "get-url", "origin"]).trim(); } catch { return; }
-  if (!/^(git@github\.com|https:\/\/github\.com)\//.test(origin)) {
+  if (!/github\.com[/:]/.test(origin)) {
     log(`sync skipped: origin not a GitHub remote (${origin})`);
     return;
   }

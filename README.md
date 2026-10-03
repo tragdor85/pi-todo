@@ -58,6 +58,23 @@ tail -f $HOME/.pi/agent/todos/loop.log
 - Tuning via env in the launchd plist: `PI_TODO_MAX_RUNTIME_H` (6),
   `PI_TODO_ACTIVE_WINDOW_S` (120).
 
+## Development
+
+The dev repo lives at `~/code/pi-todo` (origin = `git@github.com:tragdor85/pi-todo.git`).
+
+```bash
+cd ~/code/pi-todo
+# edit, commit, push
+git push origin main
+```
+
+The skill dir (`~/.pi/agent/skills/global-todo`) auto-syncs from
+`origin/main` on every hourly loop run (gated by `PI_TODO_SYNC=1`).
+Changes take effect on the next loop run after the push.
+
+Sync is skipped (and logged) when the skill checkout is dirty or when the
+local head is ahead of origin/main.
+
 ## Remove
 
 ```bash

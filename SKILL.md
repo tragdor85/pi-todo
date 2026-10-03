@@ -55,6 +55,9 @@ confirms with a reply. `@task list` shows open todos.
 
 launchd label `com.piagent.pi-todo-loop` runs `scripts/loop.mjs` every hour:
 
+0. syncs the skill checkout from `origin/main` (the dev repo,
+   `~/code/pi-todo`) if there are new commits — skipped when the checkout
+   is dirty, the pull isn't a fast-forward, or `PI_TODO_SYNC=0`
 1. reaps in-progress tasks (crashed worker → complete if summary exists, else
    fail; runtime > `PI_TODO_MAX_RUNTIME_H` (6) → kill the process group)
 2. busy gate (single local 27B, one request at a time) — resolves the model
@@ -69,6 +72,13 @@ launchd label `com.piagent.pi-todo-loop` runs `scripts/loop.mjs` every hour:
    logs captured) → `start`
 
 `--force` / `PI_TODO_SKIP_BUSY_CHECK=1` bypass the busy gate for manual runs.
+`PI_TODO_SYNC=0` disables the hourly skill sync.
+
+## Development
+
+Edit in `~/code/pi-todo` (origin = `git@github.com:tragdor85/pi-todo.git`).
+After `git push origin main`, the skill dir picks up the change on the next
+hourly loop run (or run `node scripts/loop.mjs --force` to test immediately).
 
 ## Worker protocol (if you are the dispatched headless worker)
 

@@ -57,9 +57,14 @@ launchd label `com.piagent.pi-todo-loop` runs `scripts/loop.mjs` every hour:
 
 1. reaps in-progress tasks (crashed worker → complete if summary exists, else
    fail; runtime > `PI_TODO_MAX_RUNTIME_H` (6) → kill the process group)
-2. busy gate: `GET <mtplx>/admin/sessions` — if any session is in-flight or
-   was active within 120 s, skip (single local 27B, one request at a time);
-   server unreachable → skip
+2. busy gate (single local 27B, one request at a time) — resolves the model
+   server from `settings.json` `defaultProvider` + `models.json`:
+   - engine servers (splash etc): busy if `GET /status` shows `!ready`,
+     in-flight/queued requests, any pi session file written within
+     `PI_TODO_ACTIVE_WINDOW_S` (120 s), or request counters move over the window
+   - mtplx: legacy `GET /admin/sessions` (in-flight / recent activity)
+   server unreachable → skip (a worker would have no model);
+   a task already in-progress → skip (one worker at a time)
 3. if pending tasks exist: `claim` → spawn `pi -p` headless worker (detached,
    logs captured) → `start`
 
@@ -87,7 +92,8 @@ launchd label `com.piagent.pi-todo-loop` runs `scripts/loop.mjs` every hour:
 
 `PI_TODO_HOME`, `PI_TODO_PI_BIN`, `PI_TODO_PI_EXTENSIONS`,
 `PI_TODO_MAX_RUNTIME_H` (6), `PI_TODO_ACTIVE_WINDOW_S` (120),
-`PI_TODO_SKIP_BUSY_CHECK`, `PI_TODO_MTPLX_ADMIN`, `PI_TODO_MTPLX_KEY`.
+`PI_TODO_SKIP_BUSY_CHECK`, `PI_TODO_MTPLX_ADMIN` / `PI_TODO_MTPLX_KEY`
+(later override the provider resolution; legacy mtplx).
 
 ## Install / remove
 

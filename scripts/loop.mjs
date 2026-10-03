@@ -9,9 +9,15 @@
  *        - worker dead  + summary file exists            → complete, notify
  *        - worker dead  + newest summaries/<id>*.md     → complete (with that summary), notify
  *        - worker dead  + no summary                    → fail (with log tail), notify
- *   3. busy gate (the local 27B serves one request at a time):
- *        PRIMARY   MTPLX GET /admin/sessions — busy if any session has in_flight
- *                              or last_access within PI_TODO_ACTIVE_WINDOW_S (120)
+ *   3. busy gate (the local model serves one request at a time):
+ *        PRIMARY   the model server pi actually uses (settings.json defaultProvider,
+ *                  resolved via models.json):
+ *                   - kind "engine" (splash etc): GET /health (public) + GET /status
+ *                     (keyed) — busy if !ready, in-flight/queued requests, any pi
+ *                     session file written within PI_TODO_ACTIVE_WINDOW_S (120),
+ *                     or request counters move over that window
+ *                   - kind "mtplx": GET /admin/sessions (legacy)
+ *        EXCLUSIVITY  a task already in-progress → skip (one worker at a time)
  *        FALLBACK  server unreachable → skip (a worker would have no model)
  *        ESCAPE    --force / PI_TODO_SKIP_BUSY_CHECK=1
  *   4. if tasks are pending: taskctl claim → build prompt → spawn
@@ -27,7 +33,7 @@
  * PI_TODO_ACTIVE_WINDOW_S, PI_TODO_SKIP_BUSY_CHECK, PI_TODO_MTPLX_ADMIN,
  * PI_TODO_MTPLX_KEY.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -53,8 +59,11 @@ const PI_BIN =
     try { fs.accessSync(p); return true; } catch { return false; }
   }) || "pi";
 
-const sleeper = new Int32Array(new SharedArrayBuffer(4).buffer);
-const sleep = (ms) => Atomics.wait(sleeper, 0, 0, ms);
+const sleeper = new Int32Array(new SharedArrayBuffer(4));
+const sleep = (ms) => {
+  try { Atomics.wait(sleeper, 0, 0, ms); }
+  catch { try { spawnSync("/bin/sleep", [String(Math.ceil(ms / 1000))]); } catch { /* no sleep available */ } }
+};
 
 function log(msg) {
   try {
@@ -78,49 +87,139 @@ function runTaskctl(args) {
   return JSON.parse(raw);
 }
 
-/* --- MTPLX busy check ------------------------------------------------- */
+/* --- model server busy check ------------------------------------------- */
 
-function mtplxAdmin() {
+/**
+ * Resolve the local model server pi actually uses: settings.json
+ * defaultProvider, falling back to models.json entries (mtplx/splash/omlx).
+ * @returns {{kind:"mtplx"|"engine", name:string, base:string, key?:string} | null}
+ */
+function modelServer() {
   if (process.env.PI_TODO_MTPLX_ADMIN) {
-    return { base: process.env.PI_TODO_MTPLX_ADMIN, key: process.env.PI_TODO_MTPLX_KEY || "1313" };
+    return { kind: "mtplx", name: process.env.PI_TODO_MTPLX_ADMIN, base: process.env.PI_TODO_MTPLX_ADMIN, key: process.env.PI_TODO_MTPLX_KEY || "1313" };
   }
   try {
     const mj = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "models.json"), "utf8"));
     const provs = mj.providers || {};
-    const p = Object.entries(provs).find(([k, v]) => k === "mtplx" || /mtplx/.test(v?.baseUrl || ""))?.[1];
-    if (!p?.baseUrl) return null;
-    return { base: new URL(p.baseUrl).origin, key: p.apiKey || "1313" };
+    let defName = null;
+    try {
+      defName = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "settings.json"), "utf8"))?.defaultProvider || null;
+    } catch { /* no settings file */ }
+    const pick =
+      (defName && provs[defName] ? [defName, provs[defName]] : null) ||
+      Object.entries(provs).find(([n, v]) => /mtplx/i.test(n) || /mtplx/i.test(v?.baseUrl || "")) ||
+      Object.entries(provs).find(([n, v]) => /splash|omlx/i.test(n) || /splash|omlx/i.test(v?.baseUrl || "")) ||
+      null;
+    if (!pick?.[1]?.baseUrl) return null;
+    const [name, v] = pick;
+    const kind = /mtplx/i.test(name) || /mtplx/i.test(v.baseUrl) ? "mtplx" : "engine";
+    return { kind, name, base: new URL(v.baseUrl).origin, key: v.apiKey };
   } catch {
     return null;
   }
 }
 
+/** Count pi session files written within ACTIVE_WINDOW_S (any agent recently used the model). */
+function recentPiActivity() {
+  const root = path.join(os.homedir(), ".pi", "agent", "sessions");
+  const cutoff = Date.now() - ACTIVE_WINDOW_S * 1000;
+  let found = 0;
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.name.endsWith(".jsonl")) continue;
+      try {
+        if (fs.statSync(p).mtimeMs >= cutoff) { found++; return; }
+      } catch { /* removed mid-scan */ }
+    }
+  };
+  walk(root);
+  return found;
+}
+
 /**
- * @returns {{state:"ok", busy:boolean, reason:string, inflight:number} |
+ * @returns {{state:"ok", busy:boolean, reason:string} |
  *           {state:"unreachable"} | {state:"unconfigured"}}
  */
-async function mtplxBusy() {
-  const a = mtplxAdmin();
-  if (!a) return { state: "unconfigured" };
+async function modelServerBusy() {
+  const m = modelServer();
+  if (!m) return { state: "unconfigured" };
+
+  if (m.kind === "mtplx") {
+    // legacy mtplx admin API
+    try {
+      const ctl = new AbortController();
+      const to = setTimeout(() => ctl.abort(), 4000);
+      const res = await fetch(m.base + "/admin/sessions", {
+        headers: { authorization: `Bearer ${m.key}`, "x-mtplx-client": "pi" },
+        signal: ctl.signal,
+      });
+      clearTimeout(to);
+      if (!res.ok) return { state: "unreachable" };
+      const body = await res.json();
+      const sessions = body.sessions || [];
+      const inflight = sessions.filter((s) => s.in_flight);
+      const recent = sessions.filter((s) => !s.in_flight && s.last_access_s && Date.now() / 1000 - s.last_access_s < ACTIVE_WINDOW_S);
+      if (inflight.length) return { state: "ok", busy: true, reason: `${inflight.length} session(s) in-flight` };
+      if (recent.length) return { state: "ok", busy: true, reason: `${recent.length} session(s) active within ${ACTIVE_WINDOW_S}s` };
+      return { state: "ok", busy: false, reason: "all sessions idle" };
+    } catch {
+      return { state: "unreachable" };
+    }
+  }
+
+  // "engine" kind (splash / openai-compatible local servers)
+  let health;
   try {
     const ctl = new AbortController();
     const to = setTimeout(() => ctl.abort(), 4000);
-    const res = await fetch(a.base + "/admin/sessions", {
-      headers: { authorization: `Bearer ${a.key}`, "x-mtplx-client": "pi" },
-      signal: ctl.signal,
-    });
+    health = await fetch(m.base + "/health", { signal: ctl.signal });
     clearTimeout(to);
-    if (!res.ok) return { state: "unreachable" };
-    const body = await res.json();
-    const sessions = body.sessions || [];
-    const inflight = sessions.filter((s) => s.in_flight);
-    const recent = sessions.filter((s) => !s.in_flight && s.last_access_s && Date.now() / 1000 - s.last_access_s < ACTIVE_WINDOW_S);
-    if (inflight.length) return { state: "ok", busy: true, reason: `${inflight.length} session(s) in-flight`, inflight: inflight.length };
-    if (recent.length) return { state: "ok", busy: true, reason: `${recent.length} session(s) active within ${ACTIVE_WINDOW_S}s`, inflight: 0 };
-    return { state: "ok", busy: false, reason: "all sessions idle", inflight: 0 };
   } catch {
     return { state: "unreachable" };
   }
+  if (!health.ok) return { state: "unreachable" };
+
+  const headers = m.key ? { authorization: `Bearer ${m.key}` } : {};
+  let status = null;
+  try {
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 4000);
+    const res = await fetch(m.base + "/status", { headers, signal: ctl.signal });
+    clearTimeout(to);
+    if (res.ok) status = await res.json();
+  } catch { /* /status unavailable — remaining signals still apply */ }
+
+  if (status) {
+    const active = status.frontend?.active || 0;
+    const waiting = status.admission?.waiting || 0;
+    if (!status.ready) return { state: "ok", busy: true, reason: `engine not ready (model ${m.name})` };
+    if (active > 0 || waiting > 0) return { state: "ok", busy: true, reason: `in-flight: active=${active} waiting=${waiting}` };
+  }
+
+  if (recentPiActivity()) return { state: "ok", busy: true, reason: `pi session activity within ${ACTIVE_WINDOW_S}s` };
+
+  if (status?.latency) {
+    const c1h = status.latency.http_request?.count ?? 0;
+    const c1o = status.latency.output_interval?.count ?? 0;
+    sleep(ACTIVE_WINDOW_S * 1000);
+    try {
+      const res = await fetch(m.base + "/status", { headers });
+      if (res.ok) {
+        const st2 = await res.json();
+        const c2h = st2.latency?.http_request?.count ?? 0;
+        const c2o = st2.latency?.output_interval?.count ?? 0;
+        if (c2h !== c1h || c2o !== c1o) {
+          return { state: "ok", busy: true, reason: `request counters moved over ${ACTIVE_WINDOW_S}s (http ${c1h}→${c2h}, output ${c1o}→${c2o})` };
+        }
+      }
+    } catch { /* second sample failed — prior signals already ran */ }
+  }
+
+  return { state: "ok", busy: false, reason: "idle (no in-flight, no recent activity)" };
 }
 
 /* --- reap ------------------------------------------------------------- */
@@ -296,7 +395,7 @@ function releaseLoopLock() {
 async function main() {
   if (process.argv.includes("--status")) {
     const st = JSON.parse(execFileSync(process.execPath, [TASKCTL, "status", "--json"], { encoding: "utf8" }));
-    const busy = await mtplxBusy();
+    const busy = await modelServerBusy();
     console.log(JSON.stringify({ ...st, model: busy }, null, 2));
     return;
   }
@@ -310,15 +409,15 @@ async function main() {
     if (reaped) log(`reaped ${reaped} finished/stale in-progress task(s)`);
 
     if (!SKIP_BUSY && !process.argv.includes("--force")) {
-      const b = await mtplxBusy();
+      const b = await modelServerBusy();
       if (b.state === "unreachable") {
-        log("MTPLX server unreachable — skipping (a worker would have no model)");
+        log("model server unreachable — skipping (a worker would have no model)");
         return;
       }
       if (b.state === "unconfigured") {
-        log("warning: MTPLX admin config not found — proceeding without busy check");
+        log("warning: no model server config found — proceeding without busy check");
       } else if (b.busy) {
-        log(`MTPLX busy (${b.reason}) — skipping launch`);
+        log(`model server busy (${b.reason}) — skipping launch`);
         return;
       }
     } else {
@@ -329,6 +428,10 @@ async function main() {
     try { s = JSON.parse(fs.readFileSync(TASKS_FILE, "utf8")); } catch { s = { tasks: [] }; }
     if (!s.tasks.some((t) => t.status === "pending")) {
       log("no pending tasks — done");
+      return;
+    }
+    if (s.tasks.some((t) => t.status === "in-progress")) {
+      log("a worker is already running — skipping launch (one worker at a time)");
       return;
     }
     let t;

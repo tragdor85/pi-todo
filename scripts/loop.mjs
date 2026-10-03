@@ -41,6 +41,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SKILL_DIR = path.dirname(HERE);
 const TASKCTL = path.join(HERE, "taskctl.mjs");
 const TODO_HOME = process.env.PI_TODO_HOME || path.join(os.homedir(), ".pi", "agent", "todos");
 const TASKS_FILE = path.join(TODO_HOME, "tasks.json");
@@ -220,6 +221,46 @@ async function modelServerBusy() {
   }
 
   return { state: "ok", busy: false, reason: "idle (no in-flight, no recent activity)" };
+}
+
+/* --- keep the skill in sync with the dev repo ------------------------- */
+
+/**
+ * Development happens in ~/code/pi-todo (origin = the GitHub repo). Each
+ * hourly run pulls the skill checkout forward from origin/main so fixes
+ * deployed there take effect. Skipped when the checkout is dirty, the pull
+ * would not be a fast-forward, or PI_TODO_SYNC=0.
+ */
+function syncSkill() {
+  if (process.env.PI_TODO_SYNC === "0") return;
+  const git = (args, timeout = 30_000) =>
+    execFileSync("git", ["-C", SKILL_DIR, ...args], { timeout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  let origin = null;
+  try { origin = git(["remote", "get-url", "origin"]).trim(); } catch { return; }
+  if (!/^(git@github\.com|https:\/\/github\.com)\//.test(origin)) {
+    log(`sync skipped: origin not a GitHub remote (${origin})`);
+    return;
+  }
+  try {
+    if (git(["status", "--porcelain"]).trim()) {
+      log("sync skipped: skill checkout is dirty");
+      return;
+    }
+    git(["fetch", "origin", "main"]);
+    const head = git(["rev-parse", "HEAD"]).trim();
+    const remote = git(["rev-parse", "origin/main"]).trim();
+    if (head === remote) return;
+    // --is-ancestor exits 1 (not an ancestor) without throwing via spawnSync
+    const ff = spawnSync("git", ["-C", SKILL_DIR, "merge-base", "--is-ancestor", head, remote], { timeout: 10_000 });
+    if (ff.status !== 0) {
+      log("sync skipped: local commit(s) ahead of origin/main — push from the dev repo instead");
+      return;
+    }
+    git(["pull", "--ff-only", "origin", "main"]);
+    log(`sync: skill updated to ${remote.slice(0, 8)} (this run keeps the pre-pull code; new code takes effect next run)`);
+  } catch (e) {
+    log(`sync failed: ${String(e.stderr || e.message).trim().slice(0, 120)}`);
+  }
 }
 
 /* --- reap ------------------------------------------------------------- */
@@ -404,6 +445,7 @@ async function main() {
     return;
   }
   try {
+    syncSkill();
     fs.mkdirSync(TODO_HOME, { recursive: true });
     const reaped = reap();
     if (reaped) log(`reaped ${reaped} finished/stale in-progress task(s)`);

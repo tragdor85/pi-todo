@@ -305,19 +305,18 @@ function cmdFail(args) {
     console.log(JSON.stringify({ ok: true, task: t, noop: true }));
     return;
   }
-  const wasInProgress = t.status === "in-progress";
   t.status = "failed";
   t.error = flags.error.slice(0, 500);
   t.last_failure_at = now();
-  t.retry_cap = false; // a manual requeue that then fails counts against the auto cap again
   t.finished_at = now();
   t.worker_pid = null;
-  // always record the failure (history doubles as the retry counter);
-  // skip the duplicate entry when a failed task is re-failed
-  const last = t.history[t.history.length - 1];
-  if (wasInProgress || !last || last.status !== "failed") {
-    t.history.push({ status: "failed", at: t.finished_at, error: t.error, summary_file: t.summary_file });
-  }
+  // Always record the failure in history — it doubles as the retry counter.
+  // A reap of a crash-killed worker (claim recorded but no worker `fail`)
+  // relies on this; a failed task that is re-failed gets another entry,
+  // which is correct for the counter. `retry_cap` is set by the retry
+  // command, so it naturally survives here; a fresh retry after requeue
+  // starts the counter from the new history entries.
+  t.history.push({ status: "failed", at: t.finished_at, error: t.error, summary_file: t.summary_file });
   writeStore(s);
   releaseLock(lock);
   console.log(JSON.stringify({ ok: true, task: t }));

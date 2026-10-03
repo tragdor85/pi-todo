@@ -317,8 +317,8 @@ function retryFailed() {
   let retried = 0, exhausted = 0;
   for (const t of s.tasks) {
     if (t.status !== "failed" || t.no_retry) continue;
-    const failAt = Date.parse(t.last_failure_at || t.finished_at || "");
-    if (Number.isNaN(failAt) || failAt > cutoff) continue;
+    const failAt = Date.parse(t.last_failure_at || "");
+    if (Number.isNaN(failAt) || failAt > cutoff) continue; // no recorded failure time → don't guess
     const failures = t.history?.filter((h) => h.status === "failed").length ?? 1;
     if (t.retry_cap) {
       runTaskctl(["retry", t.id]);
@@ -376,7 +376,22 @@ function reap() {
       } else {
         const tail = logTail(t.log_file);
         const err = `worker exited without a summary${tail ? ` (log tail: ${tail})` : ""}`;
-        try { runTaskctl(["fail", t.id, "--error", err]); } catch (e) { log(`fail bookkeeping failed: ${e.message?.slice(0, 120)}`); }
+        try {
+          runTaskctl(["fail", t.id, "--error", err]);
+          // reap's fail path skips the history push (wasInProgress guard);
+          // record the failure here so the auto-retry cooldown has a clock
+          const s2 = JSON.parse(fs.readFileSync(TASKS_FILE, "utf8"));
+          const t2 = s2.tasks.find((x) => x.id === t.id);
+          if (t2 && t2.status === "failed") {
+            t2.last_failure_at = new Date().toISOString();
+            const last = t2.history[t2.history.length - 1];
+            if (!last || last.status !== "failed") {
+              t2.history.push({ status: "failed", at: t2.last_failure_at, error: err.slice(0, 500), summary_file: t2.summary_file });
+            }
+            fs.writeFileSync(TASKS_FILE + ".tmp", JSON.stringify(s2, null, 2) + "\n");
+            fs.renameSync(TASKS_FILE + ".tmp", TASKS_FILE);
+          }
+        } catch (e) { log(`fail bookkeeping failed: ${e.message?.slice(0, 120)}`); }
         notifyPeer(t, false, err.slice(0, 160));
         resolved++;
       }

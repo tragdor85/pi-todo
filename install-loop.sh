@@ -33,6 +33,8 @@ cat > "$PLIST" <<EOF
     <key>PI_TODO_MAX_RUNTIME_H</key><string>6</string>
     <key>PI_TODO_ACTIVE_WINDOW_S</key><string>120</string>
     <key>PI_TODO_SYNC</key><string>1</string>
+    <key>PI_TODO_RETRY_COOLDOWN_H</key><string>1</string>
+    <key>PI_TODO_MAX_RETRIES</key><string>3</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>3600</integer>

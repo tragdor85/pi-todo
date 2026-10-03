@@ -19,6 +19,8 @@
  *   complete <id> [--summary path]
  *   fail <id> --error <msg>
  *   release <id>                in-progress -> pending (manual recovery)
+ *   retry <id>                  failed -> pending, bumps runs (skips the retry cap)
+ *   no-retry <id>               mark failed task as terminal (loop will not auto-retry it)
  *   notify <to|self> <text...>  atomically append an iMessage to the outbox
  *   status                      counts
  *   prune [--keep N]            trim terminal tasks beyond the most recent N
@@ -306,9 +308,16 @@ function cmdFail(args) {
   const wasInProgress = t.status === "in-progress";
   t.status = "failed";
   t.error = flags.error.slice(0, 500);
+  t.last_failure_at = now();
+  t.retry_cap = false; // a manual requeue that then fails counts against the auto cap again
   t.finished_at = now();
   t.worker_pid = null;
-  if (wasInProgress) t.history.push({ status: "failed", at: t.finished_at, error: t.error, summary_file: t.summary_file });
+  // always record the failure (history doubles as the retry counter);
+  // skip the duplicate entry when a failed task is re-failed
+  const last = t.history[t.history.length - 1];
+  if (wasInProgress || !last || last.status !== "failed") {
+    t.history.push({ status: "failed", at: t.finished_at, error: t.error, summary_file: t.summary_file });
+  }
   writeStore(s);
   releaseLock(lock);
   console.log(JSON.stringify({ ok: true, task: t }));
@@ -328,6 +337,51 @@ function cmdRelease(args) {
   t.summary_file = null;
   t.log_file = null;
   t.started_at = null;
+  t.updated_at = now();
+  writeStore(s);
+  releaseLock(lock);
+  console.log(JSON.stringify({ ok: true, task: t }));
+}
+
+function cmdRetry(args) {
+  const lock = requireLock();
+  const s = readStore();
+  const t = findTask(s, args[0]);
+  if (!t) {
+    releaseLock(lock);
+    console.log(JSON.stringify({ ok: false, error: `no task ${args[0] ?? ""}` }));
+    process.exit(1);
+  }
+  if (t.status !== "failed") {
+    releaseLock(lock);
+    console.log(JSON.stringify({ ok: false, error: `${t.id} is ${t.status}, not failed` }));
+    process.exit(1);
+  }
+  t.status = "pending";
+  t.worker_pid = null;
+  t.error = null;
+  t.started_at = null;
+  t.summary_file = null;
+  t.log_file = null;
+  t.finished_at = null;
+  t.retry_cap = true; // manual retry is deliberate — exempt from the auto cap
+  t.updated_at = now();
+  t.history.push({ status: "pending", at: t.updated_at, note: "manually retried" });
+  writeStore(s);
+  releaseLock(lock);
+  console.log(JSON.stringify({ ok: true, task: t }));
+}
+
+function cmdNoRetry(args) {
+  const lock = requireLock();
+  const s = readStore();
+  const t = findTask(s, args[0]);
+  if (!t || t.status !== "failed") {
+    releaseLock(lock);
+    console.log(JSON.stringify({ ok: false, error: `cannot mark no-retry ${args[0] ?? ""} (must be failed)` }));
+    process.exit(1);
+  }
+  t.no_retry = true;
   t.updated_at = now();
   writeStore(s);
   releaseLock(lock);
@@ -393,6 +447,8 @@ function usage(code) {
       "  complete <id> [--summary path]",
       "  fail <id> --error <msg>",
       "  release <id>",
+      "  retry <id> (failed → pending, bumps runs)",
+      "  no-retry <id> (mark failed task terminal)",
       "  notify <to|self> <text...>",
       "  status",
       "  prune [--keep N]",
@@ -412,6 +468,8 @@ function main() {
     case "complete": return cmdComplete(args);
     case "fail": return cmdFail(args);
     case "release": return cmdRelease(args);
+    case "retry": return cmdRetry(args);
+    case "no-retry": return cmdNoRetry(args);
     case "notify": return cmdNotify(args);
     case "status": return cmdStatus();
     case "prune": return cmdPrune(args);

@@ -60,6 +60,9 @@ launchd label `com.piagent.pi-todo-loop` runs `scripts/loop.mjs` every hour:
    is dirty, the pull isn't a fast-forward, or `PI_TODO_SYNC=0`
 1. reaps in-progress tasks (crashed worker → complete if summary exists, else
    fail; runtime > `PI_TODO_MAX_RUNTIME_H` (6) → kill the process group)
+2. auto-retries failed tasks: after `PI_TODO_RETRY_COOLDOWN_H` (1h) a failed
+   task is requeued, up to `PI_TODO_MAX_RETRIES` (3) failed runs, then it is
+   marked no-retry (terminal) — unstick with `taskctl retry <id>`
 2. busy gate (single local 27B, one request at a time) — resolves the model
    server from `settings.json` `defaultProvider` + `models.json`:
    - engine servers (splash etc): busy if `GET /status` shows `!ready`,
@@ -102,7 +105,9 @@ hourly loop run (or run `node scripts/loop.mjs --force` to test immediately).
 
 `PI_TODO_HOME`, `PI_TODO_PI_BIN`, `PI_TODO_PI_EXTENSIONS`,
 `PI_TODO_MAX_RUNTIME_H` (6), `PI_TODO_ACTIVE_WINDOW_S` (120),
-`PI_TODO_SKIP_BUSY_CHECK`, `PI_TODO_MTPLX_ADMIN` / `PI_TODO_MTPLX_KEY`
+`PI_TODO_RETRY_COOLDOWN_H` (1), `PI_TODO_MAX_RETRIES` (3),
+`PI_TODO_SYNC` (1), `PI_TODO_SKIP_BUSY_CHECK`,
+`PI_TODO_MTPLX_ADMIN` / `PI_TODO_MTPLX_KEY`
 (later override the provider resolution; legacy mtplx).
 
 ## Install / remove

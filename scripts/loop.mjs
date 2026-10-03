@@ -50,6 +50,8 @@ const LOG_FILE = path.join(TODO_HOME, "loop.log");
 
 const MAX_RUNTIME_H = Number(process.env.PI_TODO_MAX_RUNTIME_H || "6");
 const ACTIVE_WINDOW_S = Number(process.env.PI_TODO_ACTIVE_WINDOW_S || "120");
+const RETRY_COOLDOWN_H = Number(process.env.PI_TODO_RETRY_COOLDOWN_H || "1");
+const MAX_RETRIES = Number(process.env.PI_TODO_MAX_RETRIES || "3");
 const SKIP_BUSY = process.env.PI_TODO_SKIP_BUSY_CHECK === "1";
 
 const EXT_DIR = path.join(os.homedir(), ".pi", "agent", "extensions");
@@ -296,6 +298,49 @@ function notifyPeer(t, ok, extra) {
   }
 }
 
+/* --- auto-retry --------------------------------------------------------- */
+
+/**
+ * Auto-recovery for failed tasks: after RETRY_COOLDOWN_H, a failed task is
+ * requeued (failed → pending, runs+1) unless it already failed
+ * MAX_RETRIES or more times, is marked no_retry, or was manually retried
+ * (retry_cap).
+ * Returns [retried, exhausted] counts.
+ */
+function retryFailed() {
+  let s;
+  try { s = JSON.parse(fs.readFileSync(TASKS_FILE, "utf8")); } catch { return [0, 0]; }
+  const cutoff = Date.now() - RETRY_COOLDOWN_H * 3.6e6;
+  let retried = 0, exhausted = 0;
+  for (const t of s.tasks) {
+    if (t.status !== "failed" || t.no_retry) continue;
+    const failAt = Date.parse(t.last_failure_at || t.finished_at || "");
+    if (Number.isNaN(failAt) || failAt > cutoff) continue;
+    const failures = t.history?.filter((h) => h.status === "failed").length ?? 1;
+    if (t.retry_cap) {
+      runTaskctl(["retry", t.id]);
+      t.status = "pending";
+      t.retry_cap = false;
+      retried++;
+      log(`T ${t.id} auto-retried (manual requeue, run ${t.runs})`);
+    } else if ((failures || 1) >= MAX_RETRIES) {
+      t.no_retry = true;
+      exhausted++;
+      log(`T ${t.id} gave up: ${failures} failed run(s) ≥ ${MAX_RETRIES} — marked no-retry (use: taskctl retry ${t.id})`);
+    } else {
+      runTaskctl(["retry", t.id]);
+      retried++;
+      log(`T ${t.id} auto-retried (${failures} failed run(s), run ${t.runs})`);
+    }
+  }
+  if (retried || exhausted) {
+    const tmp = TASKS_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n");
+    fs.renameSync(tmp, TASKS_FILE);
+  }
+  return [retried, exhausted];
+}
+
 /**
  * Reap in-progress tasks (crashed workers, runtime overruns).
  * Returns how many tasks were resolved.
@@ -449,6 +494,9 @@ async function main() {
     fs.mkdirSync(TODO_HOME, { recursive: true });
     const reaped = reap();
     if (reaped) log(`reaped ${reaped} finished/stale in-progress task(s)`);
+    const [retried, exhausted] = retryFailed();
+    if (retried) log(`auto-retried ${retried} failed task(s)`);
+    if (exhausted) log(`gave up on ${exhausted} failed task(s) (retry cap reached)`);
 
     if (!SKIP_BUSY && !process.argv.includes("--force")) {
       const b = await modelServerBusy();

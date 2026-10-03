@@ -14,6 +14,9 @@ that does the work when the local 27B model is free.
   skill every hour. If no pi agent is using the local model (checked via the
   MTPLX admin API), it claims the oldest pending task and launches a detached
   headless `pi -p` worker with a fixed workdir.
+- **Recover**: a failed task is auto-requeued after an hour, up to 3 failed
+  runs; after that it's marked no-retry (terminal). Unstick with
+  `taskctl retry <id>`; mark a task do-not-retry with `taskctl no-retry <id>`.
 - **Finish**: the worker writes a summary
   (`~/.pi/agent/todos/summaries/<id>-r<n>-<stamp>.md`) and notifies you on
   iMessage. The loop reaps crashed/overrun workers hourly and notifies on
@@ -38,6 +41,8 @@ $TC list                          # open todos
 $TC list --status done            # finished
 $TC show T0003
 $TC release T0003                 # in-progress → pending
+$TC retry T0003                   # failed → pending (counts as a run)
+$TC no-retry T0003                # failed → terminal (no auto-retry)
 $TC fail T0003 --error "why"      # mark failed
 $TC status                        # counts
 $TC notify self "hello"           # queue an iMessage
@@ -56,7 +61,8 @@ tail -f $HOME/.pi/agent/todos/loop.log
 - A worker killed by macOS (code 137) is auto-retried on the next run — its
   `work/<id>/` dir and previous summaries persist, so a re-run continues.
 - Tuning via env in the launchd plist: `PI_TODO_MAX_RUNTIME_H` (6),
-  `PI_TODO_ACTIVE_WINDOW_S` (120).
+  `PI_TODO_ACTIVE_WINDOW_S` (120), `PI_TODO_RETRY_COOLDOWN_H` (1),
+  `PI_TODO_MAX_RETRIES` (3), `PI_TODO_SYNC` (1).
 
 ## Development
 

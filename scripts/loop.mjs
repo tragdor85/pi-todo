@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * Hourly loop for the global todo skill (run by launchd: com.piagent.pi-todo-loop).
+ * Periodic loop for the global todo skill (run by launchd: com.piagent.pi-todo-loop).
+ * Cadence: PI_TODO_INTERVAL_S (default 900 = 15 min) — the loop self-reschedules
+ * with sleep+exit, so interval changes take effect on the next wake.
  *
  * Every run:
  *   1. takes a loop lock (one loop run at a time)
@@ -28,7 +30,7 @@
  * The worker is fire-and-forget: it completes its own bookkeeping (taskctl
  * complete/fail + taskctl notify). This loop exits after launching.
  *
- * Env: PI_TODO_HOME, PI_TODO_PI_BIN, PI_TODO_PI_EXTENSIONS (comma list of
+ * Env: PI_TODO_INTERVAL_S (900), PI_TODO_HOME, PI_TODO_PI_BIN, PI_TODO_PI_EXTENSIONS (comma list of
  * extension file basenames or absolute paths), PI_TODO_MAX_RUNTIME_H,
  * PI_TODO_ACTIVE_WINDOW_S, PI_TODO_SKIP_BUSY_CHECK, PI_TODO_MTPLX_ADMIN,
  * PI_TODO_MTPLX_KEY.
@@ -48,6 +50,7 @@ const TASKS_FILE = path.join(TODO_HOME, "tasks.json");
 const LOCK_DIR = path.join(TODO_HOME, "loop.lock");
 const LOG_FILE = path.join(TODO_HOME, "loop.log");
 
+const INTERVAL_S = Number(process.env.PI_TODO_INTERVAL_S || "900");
 const MAX_RUNTIME_H = Number(process.env.PI_TODO_MAX_RUNTIME_H || "6");
 const ACTIVE_WINDOW_S = Number(process.env.PI_TODO_ACTIVE_WINDOW_S || "120");
 const RETRY_COOLDOWN_H = Number(process.env.PI_TODO_RETRY_COOLDOWN_H || "1");
@@ -229,7 +232,7 @@ async function modelServerBusy() {
 
 /**
  * Development happens in ~/code/pi-todo (origin = the GitHub repo). Each
- * hourly run pulls the skill checkout forward from origin/main so fixes
+ * each run pulls the skill checkout forward from origin/main so fixes
  * deployed there take effect. Skipped when the checkout is dirty, the pull
  * would not be a fast-forward, or PI_TODO_SYNC=0.
  */
@@ -388,7 +391,7 @@ function reap() {
 function buildPrompt(t) {
   const sum = t.summary_file;
   return [
-    "You are a headless pi worker dispatched by the hourly global-todo loop. The local 27B model serves one request at a time; no other agent is running right now.",
+    "You are a headless pi worker dispatched by the global-todo loop (15-min cadence). The local 27B model serves one request at a time; no other agent is running right now.",
     "",
     `Task id: ${t.id}`,
     `Task title: ${t.title}`,
@@ -478,6 +481,8 @@ function releaseLoopLock() {
   fs.rmSync(LOCK_DIR, { recursive: true, force: true });
 }
 
+const t0 = Date.now();
+
 async function main() {
   if (process.argv.includes("--status")) {
     const st = JSON.parse(execFileSync(process.execPath, [TASKCTL, "status", "--json"], { encoding: "utf8" }));
@@ -529,11 +534,27 @@ async function main() {
       t = runTaskctl(["claim"]).task;
     } catch (e) {
       log(`claim failed: ${e.message?.slice(0, 150)}`);
-      return;
     }
-    launch(t);
+    if (t) launch(t);
   } finally {
     releaseLoopLock();
+    // self-reschedule: sleep until the next wake, then re-run this file.
+    // (launchd cannot be reloaded from a detached process; this also makes
+    // PI_TODO_INTERVAL_S changes take effect without reinstalling the plist).
+    // Manual --force runs exit instead — no background sleeper.
+    const manual = process.argv.includes("--force") || SKIP_BUSY;
+    if (!manual) {
+      const wait = Math.max(0, INTERVAL_S - (Date.now() - t0) / 1000);
+      if (wait > 0) {
+        log(`next run in ${Math.round(wait)}s`);
+        sleep(Math.ceil(wait) * 1000);
+        spawnSync(process.execPath, [new URL(import.meta.url).pathname], {
+          stdio: "ignore",
+          detached: true,
+          env: process.env,
+        });
+      }
+    }
   }
 }
 

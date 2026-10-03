@@ -1,12 +1,11 @@
 ---
 name: global-todo
-description: Global todo list for pi — add/list/inspect tasks from any session (also via iMessage @task); an hourly headless worker picks up pending tasks when the local 27B model is free and writes a summary file per completed task. Use when the user asks about todos, wants a task queued for later, or when you are the headless todo worker.
+description: Global todo list for pi — add/list/inspect tasks from any session (also via iMessage @task); a 15-minute cadence headless worker picks up pending tasks when the local 27B model is free and writes a summary file per completed task. Use when the user asks about todos, wants a task queued for later, or when you are the headless todo worker.
 ---
 
 # Global Todo
 
-A shared task store that every pi session can read and write, plus an hourly
-headless worker that executes pending tasks when the local model is free.
+A shared task store that every pi session can read and write, plus a worker on a 15-minute cadence that executes pending tasks when the local model is free.
 
 ## Layout
 
@@ -17,7 +16,7 @@ headless worker that executes pending tasks when the local model is free.
 ├── logs/<id>-r<n>-<stamp>.log      headless pi stdout/stderr per run
 ├── work/<id>/                     worker working dir (persists across retries)
 ├── outbox/                        one JSON file per pending iMessage notification
-├── loop.log                       hourly loop trace
+├── loop.log                       loop trace (every 15 min)
 └── lock/                          process lock
 ```
 
@@ -51,9 +50,9 @@ From the phone: text yourself with `@task <anything>` — the pi-imessage
 extension handles it deterministically (never enters agent context) and
 confirms with a reply. `@task list` shows open todos.
 
-## The hourly loop
+## The loop (every 15 min)
 
-launchd label `com.piagent.pi-todo-loop` runs `scripts/loop.mjs` every hour:
+launchd label `com.piagent.pi-todo-loop` boots `scripts/loop.mjs`, which then self-reschedules every `PI_TODO_INTERVAL_S` (900 = 15 min):
 
 0. syncs the skill checkout from `origin/main` (the dev repo,
    `~/code/pi-todo`) if there are new commits — skipped when the checkout
@@ -75,13 +74,13 @@ launchd label `com.piagent.pi-todo-loop` runs `scripts/loop.mjs` every hour:
    logs captured) → `start`
 
 `--force` / `PI_TODO_SKIP_BUSY_CHECK=1` bypass the busy gate for manual runs.
-`PI_TODO_SYNC=0` disables the hourly skill sync.
+`PI_TODO_SYNC=0` disables the per-run skill sync.
 
 ## Development
 
 Edit in `~/code/pi-todo` (origin = `git@github.com:tragdor85/pi-todo.git`).
 After `git push origin main`, the skill dir picks up the change on the next
-hourly loop run (or run `node scripts/loop.mjs --force` to test immediately).
+loop run (≤ 15 min) (or run `node scripts/loop.mjs --force` to test immediately).
 
 ## Worker protocol (if you are the dispatched headless worker)
 
@@ -104,8 +103,9 @@ hourly loop run (or run `node scripts/loop.mjs --force` to test immediately).
 ## Tuning (env)
 
 `PI_TODO_HOME`, `PI_TODO_PI_BIN`, `PI_TODO_PI_EXTENSIONS`,
-`PI_TODO_MAX_RUNTIME_H` (6), `PI_TODO_ACTIVE_WINDOW_S` (120),
-`PI_TODO_RETRY_COOLDOWN_H` (1), `PI_TODO_MAX_RETRIES` (3),
+`PI_TODO_INTERVAL_S` (900), `PI_TODO_MAX_RUNTIME_H` (6),
+`PI_TODO_ACTIVE_WINDOW_S` (120), `PI_TODO_RETRY_COOLDOWN_H` (1),
+`PI_TODO_MAX_RETRIES` (3),
 `PI_TODO_SYNC` (1), `PI_TODO_SKIP_BUSY_CHECK`,
 `PI_TODO_MTPLX_ADMIN` / `PI_TODO_MTPLX_KEY`
 (later override the provider resolution; legacy mtplx).
@@ -113,6 +113,6 @@ hourly loop run (or run `node scripts/loop.mjs --force` to test immediately).
 ## Install / remove
 
 ```bash
-sh ~/.pi/agent/skills/global-todo/install-loop.sh            # install (RunAtLoad + hourly)
+sh ~/.pi/agent/skills/global-todo/install-loop.sh            # install (RunAtLoad, then 15-min self-reschedule)
 sh ~/.pi/agent/skills/global-todo/install-loop.sh --remove   # uninstall
 ```

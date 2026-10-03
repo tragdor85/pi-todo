@@ -1,6 +1,6 @@
 # global-todo — global todo list for pi
 
-A shared task store every pi session can use, plus an hourly headless worker
+A shared task store every pi session can use, plus a worker on a 15-minute cadence
 that does the work when the local 27B model is free.
 
 ## How it works
@@ -11,7 +11,7 @@ that does the work when the local 27B model is free.
   extension handles `@task` and replies with a confirmation — it never reaches
   the agent, so it can't contaminate a session's context).
 - **Run**: a launchd job (`com.piagent.pi-todo-loop`) wakes the `global-todo`
-  skill every hour. If no pi agent is using the local model (checked via the
+  skill every 15 minutes. If no pi agent is using the local model (checked via the
   MTPLX admin API), it claims the oldest pending task and launches a detached
   headless `pi -p` worker with a fixed workdir.
 - **Recover**: a failed task is auto-requeued after an hour, up to 3 failed
@@ -19,7 +19,7 @@ that does the work when the local 27B model is free.
   `taskctl retry <id>`; mark a task do-not-retry with `taskctl no-retry <id>`.
 - **Finish**: the worker writes a summary
   (`~/.pi/agent/todos/summaries/<id>-r<n>-<stamp>.md`) and notifies you on
-  iMessage. The loop reaps crashed/overrun workers hourly and notifies on
+  iMessage. The loop reaps crashed/overrun workers each run and notifies on
   failures too.
 
 ## Where things live
@@ -60,9 +60,10 @@ tail -f $HOME/.pi/agent/todos/loop.log
   2 minutes; if the MTPLX server is down, the loop does nothing.
 - A worker killed by macOS (code 137) is auto-retried on the next run — its
   `work/<id>/` dir and previous summaries persist, so a re-run continues.
-- Tuning via env in the launchd plist: `PI_TODO_MAX_RUNTIME_H` (6),
-  `PI_TODO_ACTIVE_WINDOW_S` (120), `PI_TODO_RETRY_COOLDOWN_H` (1),
-  `PI_TODO_MAX_RETRIES` (3), `PI_TODO_SYNC` (1).
+- Tuning via env in the launchd plist: `PI_TODO_INTERVAL_S` (900),
+  `PI_TODO_MAX_RUNTIME_H` (6), `PI_TODO_ACTIVE_WINDOW_S` (120),
+  `PI_TODO_RETRY_COOLDOWN_H` (1), `PI_TODO_MAX_RETRIES` (3),
+  `PI_TODO_SYNC` (1).
 
 ## Development
 
@@ -75,7 +76,7 @@ git push origin main
 ```
 
 The skill dir (`~/.pi/agent/skills/global-todo`) auto-syncs from
-`origin/main` on every hourly loop run (gated by `PI_TODO_SYNC=1`).
+`origin/main` on every loop run (15 min) (gated by `PI_TODO_SYNC=1`).
 Changes take effect on the next loop run after the push.
 
 Sync is skipped (and logged) when the skill checkout is dirty or when the

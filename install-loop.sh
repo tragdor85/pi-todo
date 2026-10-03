@@ -1,5 +1,6 @@
 #!/bin/sh
-# Install/remove the hourly global-todo loop launchd agent.
+# Install/remove the global-todo loop launchd agent.
+# Default cadence: every 15 min (PI_TODO_INTERVAL_S in the plist).
 set -eu
 
 LABEL="com.piagent.pi-todo-loop"
@@ -30,6 +31,7 @@ cat > "$PLIST" <<EOF
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
+    <key>PI_TODO_INTERVAL_S</key><string>900</string>
     <key>PI_TODO_MAX_RUNTIME_H</key><string>6</string>
     <key>PI_TODO_ACTIVE_WINDOW_S</key><string>120</string>
     <key>PI_TODO_SYNC</key><string>1</string>
@@ -37,7 +39,6 @@ cat > "$PLIST" <<EOF
     <key>PI_TODO_MAX_RETRIES</key><string>3</string>
   </dict>
   <key>RunAtLoad</key><true/>
-  <key>StartInterval</key><integer>3600</integer>
   <key>StandardOutPath</key><string>$HOME/.pi/agent/todos/loop-stdout.log</string>
   <key>StandardErrorPath</key><string>$HOME/.pi/agent/todos/loop-stderr.log</string>
 </dict>

@@ -28,7 +28,9 @@
  *        detached (own pgid, stdio → logs/<file>) → taskctl start <id> --pid.
  *
  * The worker is fire-and-forget: it completes its own bookkeeping (taskctl
- * complete/fail + taskctl notify). This loop exits after launching.
+ * complete/fail + taskctl notify). On pickup the loop sends a "started"
+ * iMessage (🚀) to the task's source peer; completion/failure messages
+ * (✅/⚠️) are shared with it via notify.mjs. This loop exits after launching.
  *
  * Env: PI_TODO_INTERVAL_S (900), PI_TODO_HOME, PI_TODO_PI_BIN, PI_TODO_PI_EXTENSIONS (comma list of
  * extension file basenames or absolute paths), PI_TODO_MAX_RUNTIME_H,
@@ -41,6 +43,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { notifyMessage } from "./notify.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.dirname(HERE);
@@ -293,9 +296,13 @@ function logTail(file, maxBytes = 300) {
   } catch { return null; }
 }
 
-function notifyPeer(t, ok, extra) {
+/**
+ * Send an iMessage about a task to its source peer via taskctl notify.
+ * outcome: "start" | "done" | "failed" — one shared format (notify.mjs).
+ */
+function notifyPeer(t, outcome, extra) {
   try {
-    runTaskctl(["notify", t.source_peer || "self", `${ok ? "✅" : "⚠️"} Todo ${t.id} "${t.title}" ${ok ? "done" : "failed"} — ${extra}`]);
+    runTaskctl(["notify", t.source_peer || "self", notifyMessage(t, outcome, extra)]);
   } catch (e) {
     log(`T ${t.id} notify failed: ${e.message?.slice(0, 120)}`);
   }
@@ -362,7 +369,7 @@ function reap() {
       sleep(5000);
       if (pidAlive(t.worker_pid)) { try { process.kill(-t.worker_pid, "SIGKILL"); } catch { try { process.kill(t.worker_pid, "SIGKILL"); } catch {} } }
       try { runTaskctl(["fail", t.id, "--error", `runtime exceeded ${MAX_RUNTIME_H}h (worker killed)`]); } catch (e) { log(`fail after kill failed: ${e.message?.slice(0, 120)}`); }
-      notifyPeer(t, false, `runtime exceeded ${MAX_RUNTIME_H}h — killed`);
+      notifyPeer(t, "failed", `runtime exceeded ${MAX_RUNTIME_H}h — killed`);
       resolved++;
       continue;
     }
@@ -371,7 +378,7 @@ function reap() {
       const summary = fs.existsSync(t.summary_file || "") ? t.summary_file : newestSummaryFor(t.id);
       if (summary) {
         try { runTaskctl(["complete", t.id, "--summary", summary]); } catch (e) { log(`complete failed: ${e.message?.slice(0, 120)}`); }
-        notifyPeer(t, true, "worker finished");
+        notifyPeer(t, "done", "worker finished");
         resolved++;
       } else {
         const tail = logTail(t.log_file);
@@ -392,7 +399,7 @@ function reap() {
             fs.renameSync(TASKS_FILE + ".tmp", TASKS_FILE);
           }
         } catch (e) { log(`fail bookkeeping failed: ${e.message?.slice(0, 120)}`); }
-        notifyPeer(t, false, err.slice(0, 160));
+        notifyPeer(t, "failed", err.slice(0, 160));
         resolved++;
       }
     }
@@ -461,11 +468,14 @@ function launch(t) {
     },
   });
   child.unref();
+  let started = false;
   try {
     runTaskctl(["start", t.id, "--pid", String(child.pid), "--log", logPath]);
+    started = true;
   } catch (e) {
     log(`start bookkeeping failed: ${e.message?.slice(0, 150)}`);
   }
+  if (started) notifyPeer(t, "start", "worker running");
   log(`T ${t.id} launched: pi worker pid ${child.pid} (run ${t.runs}) → ${logPath}`);
 }
 

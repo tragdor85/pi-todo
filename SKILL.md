@@ -76,6 +76,11 @@ launchd label `com.piagent.pi-todo-loop` boots `scripts/loop.mjs`, which then se
 `--force` / `PI_TODO_SKIP_BUSY_CHECK=1` bypass the busy gate for manual runs.
 `PI_TODO_SYNC=0` disables the per-run skill sync.
 
+**Notifications** (via `taskctl notify` → iMessage, to the task's source peer,
+`self` if added locally): when a task is picked up the loop sends
+`🚀 Todo <id> "<title>" started — worker running`; completion and failure use
+the same shared format (`✅ … done` / `⚠️ … failed`) from `scripts/notify.mjs`.
+
 ## Development
 
 Edit in `~/code/pi-todo` (origin = `git@github.com:tragdor85/pi-todo.git`).

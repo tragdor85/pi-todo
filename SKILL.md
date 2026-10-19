@@ -83,7 +83,7 @@ the same shared format (`✅ … done` / `⚠️ … failed`) from `scripts/noti
 
 ## Development
 
-Edit in your local clone (push to `origin` when ready).
+Edit in your local clone (`$CODE_DIR/pi-todo`, defaults to `$HOME/code`); push to `origin` when ready.
 After `git push origin main`, the skill dir picks up the change on the next
 loop run (≤ 15 min) (or run `node scripts/loop.mjs --force` to test immediately).
 

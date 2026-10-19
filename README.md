@@ -67,7 +67,13 @@ tail -f $HOME/.pi/agent/todos/loop.log
 
 ## Development
 
-The dev repo is cloned locally and pushed to a remote `origin`.
+The dev repo is cloned in `$CODE_DIR` (defaults to `$HOME/code`):
+
+```bash
+cd $CODE_DIR/pi-todo
+# edit, commit, push
+git push origin main
+```
 
 ```bash
 cd ~/code/pi-todo

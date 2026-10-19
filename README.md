@@ -67,7 +67,7 @@ tail -f $HOME/.pi/agent/todos/loop.log
 
 ## Development
 
-The dev repo lives at `~/code/pi-todo` (origin = `git@github.com:tragdor85/pi-todo.git`).
+The dev repo is cloned locally and pushed to a remote `origin`.
 
 ```bash
 cd ~/code/pi-todo

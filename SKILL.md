@@ -55,7 +55,7 @@ confirms with a reply. `@task list` shows open todos.
 launchd label `com.piagent.pi-todo-loop` boots `scripts/loop.mjs`, which then self-reschedules every `PI_TODO_INTERVAL_S` (900 = 15 min):
 
 0. syncs the skill checkout from `origin/main` (the dev repo,
-   `~/code/pi-todo`) if there are new commits — skipped when the checkout
+   `$CODE_DIR/pi-todo`) if there are new commits — skipped when the checkout
    is dirty, the pull isn't a fast-forward, or `PI_TODO_SYNC=0`
 1. reaps in-progress tasks (crashed worker → complete if summary exists, else
    fail; runtime > `PI_TODO_MAX_RUNTIME_H` (6) → kill the process group)

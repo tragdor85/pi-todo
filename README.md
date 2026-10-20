@@ -70,13 +70,7 @@ tail -f $HOME/.pi/agent/todos/loop.log
 The dev repo is cloned in `$CODE_DIR` (defaults to `$HOME/code`):
 
 ```bash
-cd $CODE_DIR/pi-todo
-# edit, commit, push
-git push origin main
-```
-
-```bash
-cd ~/code/pi-todo
+cd "${CODE_DIR:-$HOME/code}"/pi-todo
 # edit, commit, push
 git push origin main
 ```

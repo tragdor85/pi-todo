@@ -52,6 +52,7 @@ const TODO_HOME = process.env.PI_TODO_HOME || path.join(os.homedir(), ".pi", "ag
 const TASKS_FILE = path.join(TODO_HOME, "tasks.json");
 const LOCK_DIR = path.join(TODO_HOME, "loop.lock");
 const LOG_FILE = path.join(TODO_HOME, "loop.log");
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
 const INTERVAL_S = Number(process.env.PI_TODO_INTERVAL_S || "900");
 const MAX_RUNTIME_H = Number(process.env.PI_TODO_MAX_RUNTIME_H || "6");
@@ -506,6 +507,51 @@ function releaseLoopLock() {
   fs.rmSync(LOCK_DIR, { recursive: true, force: true });
 }
 
+/**
+ * Arrange the next run: sleep until the interval elapses, spawn a fresh copy
+ * of this script (detached, own session), then exit — leaving exactly one loop
+ * process alive. Uses async spawn + unref + exit, NOT spawnSync: spawnSync
+ * blocks until the (long-lived) child exits, so the parent never dies and a
+ * process leaks every interval.
+ */
+export function scheduleNextRun({
+  intervalS = INTERVAL_S,
+  t0 = Date.now(),
+  manual = false,
+  scriptPath = SCRIPT_PATH,
+  sleepFn = sleep,
+  spawnFn = spawn,
+  exitFn = (code) => process.exit(code),
+  setTimeoutFn = (fn, ms) => setTimeout(fn, ms),
+  logFn = log,
+  settleMs = 500,
+} = {}) {
+  if (manual) return;
+  const wait = Math.max(0, intervalS - (Date.now() - t0) / 1000);
+  if (wait <= 0) return;
+  logFn(`next run in ${Math.round(wait)}s`);
+  sleepFn(Math.ceil(wait) * 1000);
+  const child = spawnFn(process.execPath, [scriptPath], {
+    stdio: "ignore",
+    detached: true,
+    env: process.env,
+  });
+  child.unref();
+  // Brief settle so the detached fork is guaranteed to have started, then exit
+  // so exactly one loop process remains (spawnSync would block here instead).
+  setTimeoutFn(() => exitFn(0), settleMs);
+}
+
+/** True when run directly (node loop.mjs), false when imported (e.g. by tests). */
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(SCRIPT_PATH);
+  } catch {
+    return false;
+  }
+}
+
 const t0 = Date.now();
 
 async function main() {
@@ -563,28 +609,19 @@ async function main() {
     if (t) launch(t);
   } finally {
     releaseLoopLock();
-    // self-reschedule: sleep until the next wake, then re-run this file.
-    // (launchd cannot be reloaded from a detached process; this also makes
-    // PI_TODO_INTERVAL_S changes take effect without reinstalling the plist).
-    // Manual --force runs exit instead — no background sleeper.
+    // self-reschedule: sleep until the next wake, then re-run this file and
+    // exit, leaving exactly one loop alive. (launchd cannot be reloaded from a
+    // detached process; this also makes PI_TODO_INTERVAL_S changes take effect
+    // without reinstalling the plist). Manual --force runs exit instead.
     const manual = process.argv.includes("--force") || SKIP_BUSY;
-    if (!manual) {
-      const wait = Math.max(0, INTERVAL_S - (Date.now() - t0) / 1000);
-      if (wait > 0) {
-        log(`next run in ${Math.round(wait)}s`);
-        sleep(Math.ceil(wait) * 1000);
-        spawnSync(process.execPath, [new URL(import.meta.url).pathname], {
-          stdio: "ignore",
-          detached: true,
-          env: process.env,
-        });
-      }
-    }
+    scheduleNextRun({ manual, t0 });
   }
 }
 
-main().catch((e) => {
-  log(`FATAL: ${e?.stack || e}`);
-  releaseLoopLock();
-  process.exit(1);
-});
+if (isMainModule()) {
+  main().catch((e) => {
+    log(`FATAL: ${e?.stack || e}`);
+    releaseLoopLock();
+    process.exit(1);
+  });
+}
